@@ -1,4 +1,4 @@
-module github.com/ixxmi/tools
+module github.com/ixxmi/itools
 
 go 1.24.3
 
