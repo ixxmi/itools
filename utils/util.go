@@ -1182,3 +1182,39 @@ func WriteFile(filename string, data []byte) error {
 	}
 	return nil
 }
+
+// Round 保留 n 位小数（四舍五入，5 进，远离 0；支持 n 为负数）
+func Round(x float64, n int) float64 {
+	p := math.Pow10(n) // 等价于 math.Pow(10, float64(n))
+	return math.Round(x*p) / p
+}
+
+// RoundEven 银行家舍入：四舍六入，五看前一位，前一位为偶则舍弃（ties-to-even）
+func RoundEven(x float64, n int) float64 {
+	p := math.Pow10(n)
+	return math.RoundToEven(x*p) / p
+}
+
+// Trunc 保留 n 位小数（直接截断，不四舍五入；支持 n 为负数）
+func Trunc(x float64, n int) float64 {
+	p := math.Pow10(n)
+	return math.Trunc(x*p) / p
+}
+
+// FloorTo 向下取整到 n 位小数（支持 n 为负数）
+func FloorTo(x float64, n int) float64 {
+	p := math.Pow10(n)
+	return math.Floor(x*p) / p
+}
+
+// CeilTo 向上取整到 n 位小数（支持 n 为负数）
+func CeilTo(x float64, n int) float64 {
+	p := math.Pow10(n)
+	return math.Ceil(x*p) / p
+}
+
+// ToFixed 将数值格式化为固定 n 位小数字符串（不改变数值，适合展示）
+func ToFixed(x float64, n int) string {
+	// 'f' 表示小数形式；64 表示以 float64 解析
+	return strconv.FormatFloat(x, 'f', n, 64)
+}
