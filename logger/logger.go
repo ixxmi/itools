@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"runtime"
+	"sort" // <-- 添加 sort 包
 	"strings"
 	"sync"
 	"time"
@@ -99,8 +100,14 @@ type TextFormatter struct{}
 // Format 实现 Formatter 接口
 func (f *TextFormatter) Format(e *Entry) ([]byte, error) {
 	var fieldsStr string
-	for k, v := range e.Fields {
-		fieldsStr += fmt.Sprintf(" %s=%v", k, v)
+	// 为了保证字段顺序，对 key 进行排序
+	keys := make([]string, 0, len(e.Fields))
+	for k := range e.Fields {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		fieldsStr += fmt.Sprintf(" %s=%v", k, e.Fields[k])
 	}
 
 	return []byte(fmt.Sprintf("[%s] [%s] [%s:%d] %s%s\n",
@@ -118,28 +125,35 @@ type JSONFormatter struct{}
 
 // Format 实现 Formatter 接口
 func (f *JSONFormatter) Format(e *Entry) ([]byte, error) {
-	// 使用一个 map 来构建 JSON，以避免复杂的字符串拼接
-	data := make(Fields, len(e.Fields)+5)
-	data["time"] = e.Time.Format(time.RFC3339)
-	data["level"] = e.Level.String()
-	data["message"] = e.Message
-	data["file"] = fmt.Sprintf("%s:%d", e.File, e.Line)
-	data["func"] = e.Func
+	// --- 修改开始 ---
+	// 为了保证字段顺序，我们手动按固定顺序构建 JSON 字符串
+	var parts []string
 
-	for k, v := range e.Fields {
-		// 避免覆盖核心字段
-		if _, ok := data[k]; !ok {
-			data[k] = v
+	// 1. 添加核心字段，顺序固定
+	parts = append(parts, fmt.Sprintf("\"time\":%q", e.Time.Format(time.RFC3339)))
+	parts = append(parts, fmt.Sprintf("\"level\":%q", e.Level.String()))
+	parts = append(parts, fmt.Sprintf("\"message\":%q", e.Message))
+	parts = append(parts, fmt.Sprintf("\"file\":%q", fmt.Sprintf("%s:%d", e.File, e.Line)))
+	parts = append(parts, fmt.Sprintf("\"func\":%q", e.Func))
+
+	// 2. 添加自定义字段，按 key 排序以保证顺序
+	if len(e.Fields) > 0 {
+		fieldKeys := make([]string, 0, len(e.Fields))
+		for k := range e.Fields {
+			// 避免覆盖核心字段
+			if k != "time" && k != "level" && k != "message" && k != "file" && k != "func" {
+				fieldKeys = append(fieldKeys, k)
+			}
+		}
+		sort.Strings(fieldKeys) // 排序
+
+		for _, k := range fieldKeys {
+			parts = append(parts, fmt.Sprintf("\"%s\":%q", k, fmt.Sprintf("%v", e.Fields[k])))
 		}
 	}
 
-	// 手动序列化为 JSON 字符串，以避免引入额外的依赖
-	var parts []string
-	for k, v := range data {
-		parts = append(parts, fmt.Sprintf("\"%s\":%q", k, fmt.Sprintf("%v", v)))
-	}
-
 	return []byte("{" + strings.Join(parts, ",") + "}\n"), nil
+	// --- 修改结束 ---
 }
 
 // --- Logger ---
@@ -241,11 +255,15 @@ func (l *Logger) WithFields(fields Fields) *Entry {
 // --- 日志级别方法 ---
 
 func (l *Logger) Debug(args ...interface{}) {
-	l.newEntry().log(args...)
+	entry := l.newEntry()
+	entry.Level = DebugLevel
+	entry.log(args...)
 }
 
 func (l *Logger) Debugf(format string, args ...interface{}) {
-	l.newEntry().logf(format, args...)
+	entry := l.newEntry()
+	entry.Level = DebugLevel
+	entry.logf(format, args...)
 }
 
 func (l *Logger) Info(args ...interface{}) {
