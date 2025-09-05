@@ -1,3 +1,4 @@
+// Package logger
 package logger
 
 import (
@@ -6,18 +7,20 @@ import (
 	"os"
 )
 
-type logger struct {
+// LogConfig 定义了全局日志记录器的配置
+type LogConfig struct {
 	LogLevel   int
 	FilePath   string
 	MaxSizeMB  int
 	MaxBackups int
+	MaxAgeDays int
 }
 
-// initGlobalLogger 封装了创建和设置全局日志记录器的逻辑
+// InitGlobalLogger 封装了创建和设置全局日志记录器的逻辑
 // 它会配置默认的 logger，使其同时输出到控制台和轮转文件
-func InitGlobalLogger(c logger) (io.Closer, error) {
+func InitGlobalLogger(c LogConfig) (io.Closer, error) {
 	// 1. 设置日志轮转
-	logFile, err := NewRotator(c.FilePath, int64(c.MaxSizeMB)*1024*1024, c.MaxBackups)
+	logFile, err := NewRotator(c.FilePath, int64(c.MaxSizeMB)*1024*1024, c.MaxBackups, c.MaxAgeDays)
 	if err != nil {
 		return nil, fmt.Errorf("创建日志轮转文件失败: %v", err)
 	}
