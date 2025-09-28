@@ -4,6 +4,7 @@ go 1.24.3
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.1
+	github.com/mattn/go-sqlite3 v1.14.32
 	github.com/redis/go-redis/v9 v9.12.0
 	gorm.io/driver/mysql v1.6.0
 	gorm.io/gorm v1.30.1
