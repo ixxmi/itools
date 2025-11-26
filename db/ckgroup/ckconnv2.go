@@ -4,11 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"github.com/ClickHouse/clickhouse-go/v2"
-	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
 var CKCONN ClickHouseClient
@@ -20,19 +21,23 @@ type Column struct {
 
 // ClickHouseClient ClickHouse客户端
 type ClickHouseClient struct {
-	conn      driver.Conn
-	db        *sql.DB
-	batchSize int
+	conn        driver.Conn
+	db          *sql.DB
+	batchSize   int
+	clusterMode bool
+	clusterName string
 }
 
 // Config 配置结构
 type Config struct {
-	Hosts     string
-	Database  string
-	Username  string
-	Password  string
-	BatchSize int
-	Debug     bool
+	Hosts       string
+	Database    string
+	Username    string
+	Password    string
+	BatchSize   int
+	Debug       bool
+	ClusterMode *bool  // nil表示自动检测，true表示集群模式，false表示单机模式
+	ClusterName string // 集群名称，默认为 "bms_cluster"
 }
 
 // NewClickHouseClient 创建新的ClickHouse客户端
@@ -88,14 +93,45 @@ func NewClickHouseClient(config Config) (*ClickHouseClient, error) {
 	if batchSize <= 0 {
 		batchSize = 1000
 	}
+
+	// 设置集群名称，默认为 bms_cluster
+	clusterName := config.ClusterName
+	if clusterName == "" {
+		clusterName = "bms_cluster"
+	}
+
+	// 检测集群模式
+	clusterMode := false
+	if config.ClusterMode != nil {
+		// 使用用户指定的模式
+		clusterMode = *config.ClusterMode
+	} else {
+		// 自动检测集群模式
+		clusterMode = detectClusterMode(conn, clusterName)
+	}
+
 	ckconn := ClickHouseClient{
-		conn:      conn,
-		db:        db,
-		batchSize: batchSize,
+		conn:        conn,
+		db:          db,
+		batchSize:   batchSize,
+		clusterMode: clusterMode,
+		clusterName: clusterName,
 	}
 	CKCONN = ckconn
 
 	return &ckconn, nil
+}
+
+// detectClusterMode 检测是否为集群模式
+func detectClusterMode(conn driver.Conn, clusterName string) bool {
+	var count uint64
+	err := conn.QueryRow(context.Background(),
+		"SELECT count() FROM system.clusters WHERE cluster = ?", clusterName).Scan(&count)
+	if err != nil {
+		// 查询失败，默认为单机模式
+		return false
+	}
+	return count > 0
 }
 
 // Close 关闭连接
@@ -436,19 +472,34 @@ func (c *ClickHouseClient) CreateTable(database, table, order, desc string, cols
 		return fmt.Errorf("created_at column is required for table %s.%s", database, table)
 	}
 
-	if err := c.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s ON CLUSTER bms_cluster", database)); err != nil {
+	// 根据模式选择是否使用集群语法
+	clusterSuffix := ""
+	if c.clusterMode {
+		clusterSuffix = fmt.Sprintf(" ON CLUSTER %s", c.clusterName)
+	}
+
+	// 创建数据库
+	if err := c.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s%s", database, clusterSuffix)); err != nil {
 		return err
 	}
 
+	// 构建建表语句
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s ON CLUSTER bms_cluster (\n", database, table))
+	sb.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s%s (\n", database, table, clusterSuffix))
 	for i, col := range cols {
 		sb.WriteString(fmt.Sprintf("  %s %s", col.Name, col.Type))
 		if i < len(cols)-1 {
 			sb.WriteString(",\n")
 		}
 	}
-	sb.WriteString(fmt.Sprintf("\n)\nENGINE = ReplicatedMergeTree('/clickhouse/tables/%s/{shard}/%s', '{replica}')\n", database, table))
+
+	// 根据模式选择引擎
+	if c.clusterMode {
+		sb.WriteString(fmt.Sprintf("\n)\nENGINE = ReplicatedMergeTree('/clickhouse/tables/%s/{shard}/%s', '{replica}')\n", database, table))
+	} else {
+		sb.WriteString("\n)\nENGINE = MergeTree()\n")
+	}
+
 	sb.WriteString("PARTITION BY toYYYYMM(created_at)\n")
 	sb.WriteString(fmt.Sprintf("ORDER BY (%s, intHash64(created_at))\n", order))
 	sb.WriteString("SAMPLE BY intHash64(created_at)\n")
@@ -462,12 +513,20 @@ func (c *ClickHouseClient) CreateDistributedTable(distDB, localTable, desc strin
 		return fmt.Errorf("columns must be provided")
 	}
 
-	if err := c.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s ON CLUSTER bms_cluster", distDB)); err != nil {
+	// 根据模式选择是否使用集群语法
+	clusterSuffix := ""
+	if c.clusterMode {
+		clusterSuffix = fmt.Sprintf(" ON CLUSTER %s", c.clusterName)
+	}
+
+	// 创建数据库
+	if err := c.Exec(fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s%s", distDB, clusterSuffix)); err != nil {
 		return err
 	}
 
+	// 构建建表语句
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s ON CLUSTER bms_cluster (\n", distDB, localTable+"_distributed"))
+	sb.WriteString(fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s%s (\n", distDB, localTable+"_distributed", clusterSuffix))
 
 	for i, col := range cols {
 		sb.WriteString(fmt.Sprintf("  %s %s", col.Name, col.Type))
@@ -476,7 +535,13 @@ func (c *ClickHouseClient) CreateDistributedTable(distDB, localTable, desc strin
 		}
 	}
 
-	sb.WriteString(fmt.Sprintf("\n)\nENGINE = Distributed('bms_cluster', '%s', '%s')\n", distDB, localTable))
+	// 根据模式选择引擎
+	if c.clusterMode {
+		sb.WriteString(fmt.Sprintf("\n)\nENGINE = Distributed('%s', '%s', '%s')\n", c.clusterName, distDB, localTable))
+	} else {
+		// 单机模式下，分布式表直接指向本地表
+		sb.WriteString(fmt.Sprintf("\n)\nENGINE = Distributed('default', '%s', '%s')\n", distDB, localTable))
+	}
 	sb.WriteString(fmt.Sprintf("COMMENT '%s';", desc))
 
 	return c.Exec(sb.String())
